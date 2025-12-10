@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Moisture Monitor</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+    <style>
+        /* --- General Page Styling --- */
+        body {
+            font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            background: #e0f7fa; 
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            color: #004d40;
+        }
+
+        .card {
+            background: white;
+            padding: 30px;
+            border-radius: 25px;
+            box-shadow: 0 15px 35px rgba(0, 128, 128, 0.15);
+            text-align: center;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 320px; /* Fixed width for better layout */
+        }
+
+        h1 { margin: 0 0 10px 0; font-weight: 600; color: #00695c; }
+        .status { margin-bottom: 20px; font-size: 14px; color: #80cbc4; font-weight: 500;}
+
+        /* --- Button Styling --- */
+        button {
+            margin-top: 20px;
+            padding: 10px 25px;
+            background: linear-gradient(45deg, #26a69a, #4db6ac);
+            color: white;
+            border: none;
+            border-radius: 50px;
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            box-shadow: 0 5px 15px rgba(38, 166, 154, 0.4);
+            transition: transform 0.2s;
+        }
+        button:hover { transform: translateY(-2px); }
+        button:disabled { background: #b2dfdb; cursor: not-allowed; box-shadow: none; transform: none;}
+
+        /* --- Gauge Styles (Same as before) --- */
+        .gauge-wrapper { position: relative; width: 180px; height: 180px; margin-bottom: 20px; }
+        .progress-ring-svg { position: absolute; top: 0; left: 0; transform: rotate(-90deg); z-index: 10; }
+        .progress-ring__circle-bg { stroke: #e0f2f1; }
+        .progress-ring__circle-fg { stroke: url(#tealGradient); transition: stroke-dashoffset 0.5s ease; }
+        
+        .wave-container {
+            position: absolute; top: 10px; left: 10px; width: 160px; height: 160px;
+            background: #e0f7fa; border-radius: 50%; overflow: hidden; z-index: 1;
+            box-shadow: inset 0 0 20px rgba(0,0,0,0.05);
+        }
+        .liquid-fill {
+            position: absolute; top: 100%; left: 0; right: 0; bottom: 0;
+            background: linear-gradient(to bottom, #4db6ac, #009688);
+            transition: top 0.5s ease;
+        }
+        .liquid-fill::before, .liquid-fill::after {
+            content: ''; position: absolute; width: 300px; height: 300px; top: -250px; left: 50%;
+            background-color: rgba(255, 255, 255, 0.4); border-radius: 45%;
+            transform: translateX(-50%) rotate(0); animation: rotateWave 10s linear infinite;
+        }
+        .liquid-fill::after { top: -255px; background-color: rgba(255, 255, 255, 0.8); border-radius: 47%; animation: rotateWave 7s linear infinite reverse; }
+        @keyframes rotateWave { from { transform: translateX(-50%) rotate(0deg); } to { transform: translateX(-50%) rotate(360deg); } }
+
+        .overlay-content {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            z-index: 20; color: white; text-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        .percentage-text { font-size: 38px; font-weight: 700; line-height: 1;}
+        .unit-text { font-size: 16px; }
+
+        /* --- Chart Container --- */
+        .chart-wrapper {
+            width: 100%;
+            height: 150px;
+            margin-top: 20px;
+        }
+
+    </style>
+</head>
+<body>
+
+    <div class="card">
+        <h1>Moisture</h1>
+        <div class="status" id="statusText">Ready to connect</div>
+        
+        <div class="gauge-wrapper">
+            <svg style="width:0;height:0;position:absolute;" aria-hidden="true">
+                <linearGradient id="tealGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+                  <stop offset="0%" stop-color="#4db6ac" />
+                  <stop offset="100%" stop-color="#009688" />
+                </linearGradient>
+            </svg>
+
+            <svg class="progress-ring-svg" width="180" height="180">
+                <circle class="progress-ring__circle-bg" stroke-width="10" fill="transparent" r="80" cx="90" cy="90"/>
+                <circle class="progress-ring__circle-fg" id="progressRingFg" stroke-width="10" fill="transparent" r="80" cx="90" cy="90"
+                        stroke-dasharray="502.65" stroke-dashoffset="502.65"/>
+            </svg>
+
+            <div class="wave-container">
+                <div class="liquid-fill" id="liquidFill"></div>
+            </div>
+
+            <div class="overlay-content">
+                <span class="percentage-text" id="moistureVal">0</span><span class="unit-text">%</span>
+            </div>
+        </div>
+
+        <div class="chart-wrapper">
+            <canvas id="historyChart"></canvas>
+        </div>
+
+        <button id="connectBtn">Connect</button>
+    </div>
+
+    <script>
+        const connectBtn = document.getElementById('connectBtn');
+        const moistureVal = document.getElementById('moistureVal');
+        const statusText = document.getElementById('statusText');
+        const liquidFill = document.getElementById('liquidFill');
+        const progressRingFg = document.getElementById('progressRingFg');
+
+        const circleRadius = 80;
+        const circleCircumference = 2 * Math.PI * circleRadius; // ~502.65
+
+        // --- 1. SETUP THE CHART ---
+        const ctx = document.getElementById('historyChart').getContext('2d');
+        const historyChart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [], // Time labels go here
+                datasets: [{
+                    label: 'Moisture %',
+                    data: [], // Data points go here
+                    borderColor: '#009688',
+                    backgroundColor: 'rgba(77, 182, 172, 0.2)', // Light teal fill
+                    borderWidth: 2,
+                    tension: 0.4, // Smooth curves
+                    pointRadius: 0, // Hide dots for cleaner look
+                    fill: true
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: {
+                        beginAtZero: true,
+                        max: 100, // Fixed scale 0-100%
+                        grid: { display: false } // Hide grid lines
+                    },
+                    x: {
+                        display: false // Hide time labels to keep it clean
+                    }
+                },
+                plugins: { legend: { display: false } } // Hide legend
+            }
+        });
+
+        // --- 2. CONNECTION LOGIC ---
+        let reader;
+
+        connectBtn.addEventListener('click', async () => {
+            try {
+                const port = await navigator.serial.requestPort();
+                await port.open({ baudRate: 9600 });
+                
+                statusText.innerText = "Monitoring Active";
+                statusText.style.color = "#009688";
+                connectBtn.disabled = true;
+                connectBtn.innerText = "Connected";
+
+                const decoder = new TextDecoderStream();
+                port.readable.pipeTo(decoder.writable);
+                reader = decoder.readable.getReader();
+                readLoop();
+            } catch (err) {
+                console.error(err);
+                statusText.innerText = "Connection Failed";
+            }
+        });
+
+        async function readLoop() {
+            let buffer = "";
+            while (true) {
+                const { value, done } = await reader.read();
+                if (done) break;
+                buffer += value;
+                let lines = buffer.split('\n');
+                buffer = lines.pop(); 
+
+                for (const line of lines) {
+                    try {
+                        const data = JSON.parse(line);
+                        updateGauge(data.moisture);
+                        updateChart(data.moisture);
+                    } catch (e) { /* ignore noise */ }
+                }
+            }
+        }
+
+        // --- 3. UPDATE FUNCTIONS ---
+        function updateGauge(percentage) {
+            const safePercent = Math.min(Math.max(percentage, 0), 100);
+            moistureVal.innerText = safePercent;
+            liquidFill.style.top = (100 - safePercent) + "%";
+            const offset = circleCircumference - ((safePercent / 100) * circleCircumference);
+            progressRingFg.style.strokeDashoffset = offset;
+        }
+
+        function updateChart(percentage) {
+            const now = new Date().toLocaleTimeString();
+            
+            // Add new data
+            historyChart.data.labels.push(now);
+            historyChart.data.datasets[0].data.push(percentage);
+
+            // Keep only last 20 readings (scrolling effect)
+            if (historyChart.data.labels.length > 20) {
+                historyChart.data.labels.shift();
+                historyChart.data.datasets[0].data.shift();
+            }
+
+            historyChart.update();
+        }
+    </script>
+</body>
+</html>
